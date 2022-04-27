@@ -1,98 +1,66 @@
-use std::{collections::HashMap, io::Read, time::Duration};
-#[macro_use]
-extern crate serde;
+use rain_disaster_2::{LangFile, Translate};
 use rand::prelude::SliceRandom;
-#[macro_use]
-extern crate serde_json;
-use rayon::prelude::*;
+use rust_bert::pipelines::translation::{Language, TranslationModelBuilder};
+use std::{collections::HashMap, io::Read};
 
-const LANGS: &str = include_str!("langs.txt");
+const LANGS: &[Language] = &include!("langs.txt");
 const TRANSLATION_COUNT: usize = 3;
-const SOURCE_LANG: &str = "en";
-const DELAY: f64 = 0.5;
-const API_ENDPOINT: &str = "http://127.0.0.1:5000/translate";
+const SOURCE_LANG: Language = Language::English;
 
-#[derive(Serialize, Deserialize)]
-pub struct LangFile {
-	pub strings: HashMap<String, String>,
-}
-impl LangFile {
-	pub fn translate(&mut self) {
-		let langs: Vec<&str> = LANGS.lines().collect();
-		self.strings.iter_mut().for_each(|(key, text)| {
-			let text = text
-				.chars()
-				.fold((String::new(), false), |mut acc, c| {
-					if c == '<' {
-						(acc.0, true)
-					} else if c == '>' {
-						(acc.0, false)
-					} else if !acc.1 {
-						(acc.0 + &c.to_string(), false)
-					} else {
-						acc
-					}
-				})
-				.0
-				.chars()
-				.collect::<String>();
-			let original_length = text.len();
-			let client = reqwest::blocking::Client::new();
-			let mut rng = rand::thread_rng();
-			let mut last_lang = SOURCE_LANG;
-			for _ in 0..TRANSLATION_COUNT {
-				let next_lang = langs.choose(&mut rng).unwrap();
-				loop {
-					let result = client
-						.post(API_ENDPOINT)
-						.json(&json!({
-							"source": last_lang,
-							"target": next_lang.to_string(),
-							"format": "text",
-							"q": text.clone(),
-						}))
-						.send();
-					if let Ok(result) = result {
-						let result: HashMap<String, String> =
-							serde_json::from_str(&result.text().unwrap()).unwrap();
-						let new = result.get("translatedText");
-						if let Some(new) = new {
-							*text = new.to_string().chars().take(original_length).collect();
-						}
-						break;
-					} else {
-						eprintln!("{}", result.unwrap_err());
-						std::thread::sleep(Duration::from_secs_f64(DELAY));
-					}
+struct Translator<'a>(&'a mut LangFile);
+
+impl Translate for Translator<'_> {
+	fn translate(&mut self) -> anyhow::Result<()> {
+		let to_model = TranslationModelBuilder::new()
+			.with_source_languages(vec![Language::English])
+			.with_target_languages(LANGS.to_vec())
+			.create_model()
+			.unwrap();
+		let from_model = TranslationModelBuilder::new()
+			.with_source_languages(LANGS.to_vec())
+			.with_target_languages(vec![Language::English])
+			.create_model()
+			.unwrap();
+		let count = self.0.strings.len();
+		self.0
+			.strings
+			.iter_mut()
+			.enumerate()
+			.for_each(|(n, (key, text))| {
+				if key.contains("FORMAT")
+					|| key.contains("LORE")
+					|| self.0.goal_strings.contains_key(key)
+				{
+					return;
 				}
-				last_lang = *next_lang;
-				std::thread::sleep(Duration::from_secs_f64(DELAY));
-			}
-			loop {
-				let result = client
-					.post(API_ENDPOINT)
-					.json(&json!({
-						"source": last_lang,
-						"target": SOURCE_LANG.to_string(),
-						"q": text.clone(),
-						"format": "text",
-					}))
-					.send();
-				if let Ok(result) = result {
-					let result: HashMap<String, String> =
-						serde_json::from_str(&result.text().unwrap()).unwrap();
-					let new = result.get("translatedText");
-					if let Some(new) = new {
-						*text = new.to_string().chars().take(original_length * 2).collect();
-					}
-					break;
-				} else {
-					eprintln!("{}", result.unwrap_err());
-					std::thread::sleep(Duration::from_secs_f64(DELAY));
+				let mut rng = rand::thread_rng();
+				let original_text = text.clone();
+				for _ in 0..TRANSLATION_COUNT {
+					let next_lang = LANGS.choose(&mut rng).unwrap();
+					// Translate to the target language and back to english
+					*text = to_model
+						.translate(&[&text.clone()], Some(SOURCE_LANG), Some(*next_lang))
+						.unwrap()[0]
+						.clone();
+					*text = from_model
+						.translate(&[text.clone()], Some(*next_lang), Some(SOURCE_LANG))
+						.unwrap()[0]
+						.clone();
 				}
-			}
-			eprintln!("{}: {}", key, text.clone());
-		});
+				eprintln!("{}: {} => {}", key, original_text, text.clone());
+				eprintln!(
+					"this file is {}% complete",
+					(n + 1) as f32 / count as f32 * 100.0
+				);
+			});
+		Ok(())
+	}
+
+	const LANGUAGE_JSON: &'static str = include_str!("../language.json");
+
+	fn put_cache_strings(&mut self, cache_strings: &HashMap<String, String>) -> anyhow::Result<()> {
+		self.0.goal_strings = cache_strings.clone();
+		Ok(())
 	}
 }
 
@@ -107,14 +75,6 @@ fn main() {
 		.flatten()
 		.filter(|v| v.file_name().to_str().unwrap().ends_with("txt"))
 	{
-		if std::path::Path::new(&format!(
-			"./ror2-lang/rd2/{}",
-			file.file_name().to_str().unwrap()
-		))
-		.exists()
-		{
-			continue;
-		}
 		eprintln!("Translating {}", file.path().to_str().unwrap());
 		// Load file
 		let mut lang_file = vec![];
@@ -126,7 +86,25 @@ fn main() {
 		let lang_file = String::from_utf8_lossy(&lang_file).to_string();
 		// Deserialize
 		let mut lang_file: LangFile = json5::from_str(&lang_file).unwrap();
-		lang_file.translate();
+		if std::path::Path::new(&format!(
+			"./ror2-lang/rd2/{}",
+			file.file_name().to_str().unwrap()
+		))
+		.exists()
+		{
+			lang_file.goal_strings = json5::from_str::<HashMap<String, HashMap<String, String>>>(
+				&std::fs::read_to_string(&format!(
+					"./ror2-lang/rd2/{}",
+					file.file_name().to_str().unwrap()
+				))
+				.unwrap(),
+			)
+			.unwrap()
+			.get("strings")
+			.unwrap()
+			.clone();
+		}
+		Translator(&mut lang_file).translate().unwrap();
 		std::fs::write(
 			format!("./ror2-lang/rd2/{}", file.file_name().to_str().unwrap()),
 			json5::to_string(&lang_file).unwrap(),

@@ -11,4 +11,7 @@ serde_json = "*"
 serde = { version = "1.0.136", features = ["derive"] }
 rayon = "*"
 rand = "*"
-reqwest = { version = "*", features = ["blocking", "json"] }
+rust-bert = "*"
+anyhow = "*"
+uwuify = "*"
+lazy_static = "*"
