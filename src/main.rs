@@ -1,3 +1,4 @@
+use indicatif::{ProgressBar, ProgressStyle};
 use rain_disaster_2::{LangFile, Translate};
 use rand::prelude::SliceRandom;
 use rust_bert::pipelines::translation::{Language, TranslationModelBuilder};
@@ -22,37 +23,35 @@ impl Translate for Translator<'_> {
 			.create_model()
 			.unwrap();
 		let count = self.0.strings.len();
-		self.0
-			.strings
-			.iter_mut()
-			.enumerate()
-			.for_each(|(n, (key, text))| {
-				if key.contains("FORMAT")
-					|| key.contains("LORE")
-					|| self.0.goal_strings.contains_key(key)
-				{
-					return;
-				}
-				let mut rng = rand::thread_rng();
-				let original_text = text.clone();
-				for _ in 0..TRANSLATION_COUNT {
-					let next_lang = LANGS.choose(&mut rng).unwrap();
-					// Translate to the target language and back to english
-					*text = to_model
-						.translate(&[&text.clone()], Some(SOURCE_LANG), Some(*next_lang))
-						.unwrap()[0]
-						.clone();
-					*text = from_model
-						.translate(&[text.clone()], Some(*next_lang), Some(SOURCE_LANG))
-						.unwrap()[0]
-						.clone();
-				}
-				eprintln!("{}: {} => {}", key, original_text, text.clone());
-				eprintln!(
-					"this file is {}% complete",
-					(n + 1) as f32 / count as f32 * 100.0
-				);
-			});
+		let progress = ProgressBar::new(count as u64).with_style(
+			ProgressStyle::default_bar().template("{elapsed}/{duration} - {msg} - {wide_bar}"),
+		);
+		self.0.strings.iter_mut().for_each(|(key, text)| {
+			if key.contains("FORMAT")
+				|| key.contains("LORE")
+				|| self.0.goal_strings.contains_key(key)
+			{
+				return;
+			}
+			let mut rng = rand::thread_rng();
+			let original_text = text.clone();
+			for _ in 0..TRANSLATION_COUNT {
+				let next_lang = LANGS.choose(&mut rng).unwrap();
+				// Translate to the target language and back to english
+				*text = to_model
+					.translate(&[&text.clone()], Some(SOURCE_LANG), Some(*next_lang))
+					.unwrap()[0]
+					.clone();
+				progress.set_message(text.clone());
+				*text = from_model
+					.translate(&[text.clone()], Some(*next_lang), Some(SOURCE_LANG))
+					.unwrap()[0]
+					.clone();
+				progress.set_message(text.clone());
+			}
+			progress.set_message(text.clone());
+			progress.inc(1);
+		});
 		Ok(())
 	}
 

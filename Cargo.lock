@@ -1184,6 +1184,7 @@ name = "rain-disaster-2"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "indicatif",
  "json5",
  "lazy_static",
  "rand",
