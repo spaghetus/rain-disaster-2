@@ -1,3 +1,4 @@
+use indicatif::{ProgressBar, ProgressStyle};
 use rain_disaster_2::{LangFile, Translate};
 use rand::prelude::SliceRandom;
 use rayon::prelude::*;
@@ -18,20 +19,18 @@ impl Translate for Thesaurize {
 
 	fn translate(&mut self) -> anyhow::Result<()> {
 		let mut rng = rand::thread_rng();
+		let count = self.0.strings.len();
+		let progress = ProgressBar::new(count as u64).with_style(
+			ProgressStyle::default_bar()
+				.template("{elapsed}/{duration} - {per_sec} - {msg} - {wide_bar}"),
+		);
 		for (key, value) in &mut self.0.strings {
-			if key.contains("FORMAT")
-				|| key.contains("LORE")
-				|| self.0.goal_strings.contains_key(key)
-			{
+			if key.contains("FORMAT") || self.0.goal_strings.contains_key(key) {
+				progress.inc(1);
+				progress.set_message("Skipped.");
 				continue;
 			}
 			let original = value.clone();
-			let mut applicable: Vec<String> = THESAURUS
-				.clone()
-				.into_par_iter()
-				.filter(|(tkey, _)| value.to_lowercase().contains(tkey) && tkey.len() > 3)
-				.map(|(tkey, _)| tkey)
-				.collect();
 			*value = value
 				.chars()
 				.fold((String::new(), false), |acc, c| {
@@ -45,18 +44,50 @@ impl Translate for Thesaurize {
 						(acc.0 + &c.to_string(), acc.1)
 					}
 				})
-				.0;
-			applicable.shuffle(&mut rng);
-			*value = value.to_lowercase();
-			for synonym in &applicable {
-				let to = THESAURUS
-					.get(synonym)
-					.unwrap()
-					.choose(&mut rng)
-					.unwrap_or(synonym);
-				*value = value.replace(synonym, &to);
+				.0
+				.to_lowercase();
+			let mut counter = 0;
+
+			let mut banned = vec![];
+
+			let mut applicable: Vec<String>;
+			while counter < 10 {
+				applicable = THESAURUS
+					.par_iter()
+					.filter(|(tkey, _)| value.to_lowercase().contains(*tkey) && tkey.len() > 3)
+					.filter(|(tkey, _)| !banned.contains(*tkey))
+					.map(|(tkey, _)| tkey.clone())
+					.collect();
+				if applicable.is_empty() {
+					break;
+				}
+				applicable.shuffle(&mut rng);
+				for synonym in applicable.iter().take(3) {
+					banned.push(synonym.clone());
+					let to = THESAURUS
+						.get(synonym)
+						.unwrap()
+						.choose(&mut rng)
+						.unwrap_or(synonym);
+					*value = value.replace(synonym, to);
+					counter += 1;
+				}
 			}
-			println!("{} -> {}", original, value);
+
+			progress.inc(1);
+			progress.set_message(format!(
+				"{} -> {}",
+				original
+					.chars()
+					.filter(|c| c.is_ascii_graphic() || *c == ' ')
+					.take(32)
+					.collect::<String>(),
+				value
+					.chars()
+					.filter(|c| c.is_ascii_graphic() || *c == ' ')
+					.take(32)
+					.collect::<String>(),
+			));
 			// if applicable.len() > 0 {
 			// println!("{}", applicable.join(", "));
 			// }
@@ -78,7 +109,7 @@ lazy_static::lazy_static! {
 		let mut thesaurus = std::collections::HashMap::new();
 		let mut contents = include_str!("thesaurus.jsonl").lines();
 		let entries: Vec<ThesaurusEntry> = contents.by_ref().flat_map(|line| {
-			let entry: Option<ThesaurusEntry> = serde_json::from_str(line).map(|v| Some(v)).unwrap_or(None);
+			let entry: Option<ThesaurusEntry> = serde_json::from_str(line).map(Some).unwrap_or(None);
 			entry
 		}).collect();
 		for entry in entries {
