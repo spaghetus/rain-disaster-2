@@ -2,4 +2,6 @@
 
 A program that takes in Risk of Rain 2's localization files and outputs funny translations.
 
-Some of the new JSON files in the Survivors of the Void DLC are invalid, so you should run the Uwuizer or Thesaurizer to find the issues and manually correct them before running the slower AI translation mode.
+~~Some of the new JSON files in the Survivors of the Void DLC are invalid, so you should run the Uwuizer or Thesaurizer to find the issues and manually correct them before running the slower AI translation mode.~~
+
+The thesaurizer mode is recommended now, since it's usually funnier, and it runs faster than the AI translator by multiple orders of magnitude.
